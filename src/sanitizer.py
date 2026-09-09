@@ -1,56 +1,114 @@
-# src/sanitizer.py
-from presidio_analyzer import AnalyzerEngine
-from presidio_anonymizer import AnonymizerEngine
-from presidio_anonymizer.entities import OperatorConfig
-from typing import Dict, Tuple
+from .detector import PIIDetector
+from .secret_detector import SecretDetector
+from .tokenizer import PIITokenizer
+from .vault import PIIVault
+from .overlap import OverlapResolver
+from .masker import PIIMasker
+from .risk import RiskEngine
+from .policy import PolicyEngine, PolicyAction
 
-class DynamicPIIVault:
+
+class PIISanitizer:
+
     def __init__(self):
-        self.analyzer = AnalyzerEngine()
-        self.anonymizer = AnonymizerEngine()
 
-    def sanitize(self, text: str) -> Tuple[str, Dict[str, str]]:
-        """
-        Scans text for PII, dynamically assigns tokens, and returns
-        the anonymized text along with the vault mapping dictionary.
-        """
-        analyzer_results = self.analyzer.analyze(text=text, language='en')
-        
-        # Sort results by start position to ensure consistent indexing
-        analyzer_results.sort(key=lambda x: x.start)
+        self.detector = PIIDetector()
+        self.secret_detector = SecretDetector()
 
-        vault_mapping: Dict[str, str] = {}
-        entity_counters: Dict[str, int] = {}
-        operators: Dict[str, OperatorConfig] = {}
+        self.overlap_resolver = OverlapResolver()
 
-        # Create unique tokens for each detected entity (e.g., __PERSON_1__)
-        for result in analyzer_results:
-            entity_type = result.entity_type
-            entity_counters[entity_type] = entity_counters.get(entity_type, 0) + 1
-            
-            token = f"__{entity_type}_{entity_counters[entity_type]}__"
-            
-            # Extract exact original text slice from string
-            original_value = text[result.start:result.end]
-            vault_mapping[token] = original_value
-            
-            # Instruct Anonymizer to replace this specific entity type with our custom token
-            operators[entity_type] = OperatorConfig("replace", {"new_value": token})
+        self.risk_engine = RiskEngine()
+        self.policy_engine = PolicyEngine()
 
-        anonymized_result = self.anonymizer.anonymize(
-            text=text,
-            analyzer_results=analyzer_results,
-            operators=operators
+    def sanitize(self, text: str):
+
+        # --------------------------------
+        # 1. Detect PII
+        # --------------------------------
+
+        pii_detections = self.detector.detect(text)
+
+        # --------------------------------
+        # 2. Detect secrets
+        # --------------------------------
+
+        secret_detections = (
+            self.secret_detector.detect(text)
         )
 
-        return anonymized_result.text, vault_mapping
+        detections = (
+            pii_detections +
+            secret_detections
+        )
 
-    @staticmethod
-    def deanonymize(text: str, vault_mapping: Dict[str, str]) -> str:
-        """
-        Replaces custom tokens back with original PII values.
-        """
-        restored_text = text
-        for token, original_value in vault_mapping.items():
-            restored_text = restored_text.replace(token, original_value)
-        return restored_text
+        # --------------------------------
+        # 3. Resolve overlaps
+        # --------------------------------
+
+        detections = self.overlap_resolver.resolve(
+            detections
+        )
+
+        # --------------------------------
+        # 4. Risk + policy
+        # --------------------------------
+
+        for detection in detections:
+
+            detection.risk_score = (
+                self.risk_engine.calculate(
+                    detection
+                )
+            )
+
+            detection.action = (
+                self.policy_engine.decide(
+                    entity_type=detection.entity_type,
+                    confidence=detection.score,
+                    risk_score=detection.risk_score
+                ).value
+            )
+
+        # --------------------------------
+        # 5. Block critical information
+        # --------------------------------
+
+        blocked = [
+            d for d in detections
+            if d.action == PolicyAction.BLOCK.value
+        ]
+
+        if blocked:
+
+            return {
+                "status": "BLOCKED",
+                "safe_text": None,
+                "detections": detections,
+                "vault": None,
+                "reason": "Sensitive information detected"
+            }
+
+        # --------------------------------
+        # 6. Tokenize allowed PII
+        # --------------------------------
+
+        tokenizable = [
+            d for d in detections
+            if d.action == PolicyAction.TOKENIZE.value
+        ]
+
+        vault = PIIVault()
+
+        tokenizer = PIITokenizer(vault)
+
+        safe_text = tokenizer.tokenize(
+            text,
+            tokenizable
+        )
+
+        return {
+            "status": "SAFE",
+            "safe_text": safe_text,
+            "detections": detections,
+            "vault": vault
+        }
