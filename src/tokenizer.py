@@ -45,7 +45,8 @@ class PIITokenizer:
             detection.token = value_to_token[key]
 
         # Replace from right → left so offsets remain valid
-        for detection in reversed(detections):
+        sorted_detections = sorted(detections, key=lambda d: d.start, reverse=True)
+        for detection in sorted_detections:
             text = (
                 text[:detection.start]
                 + detection.token

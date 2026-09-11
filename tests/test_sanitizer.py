@@ -113,3 +113,59 @@ def test_agent_nodes_use_sanitizer_and_vault_contract():
     })
 
     assert result["final_output"] == "Please contact john@gmail.com"
+
+
+def test_vault_subtoken_collision_prevention():
+    vault = PIIVault()
+    vault.store("[PERSON_1]", "Alice")
+    vault.store("[PERSON_10]", "Bob")
+
+    text = "Team: [PERSON_10] and [PERSON_1]"
+    restored = vault.restore(text)
+    # [PERSON_10] must be restored to Bob, not Alice0!
+    assert restored == "Team: Bob and Alice"
+
+
+def test_output_validator_case_insensitive_leak_detection():
+    from src.output_validator import OutputValidator
+    validator = OutputValidator()
+    mapping = {"[EMAIL_ADDRESS_1]": "Alice.Smith@Example.COM"}
+
+    # Lowercase leak in LLM output
+    result = validator.validate(
+        response="Sending reply to alice.smith@example.com now.",
+        vault_mapping=mapping,
+    )
+    assert result.is_safe is False
+    assert "[EMAIL_ADDRESS_1]" in result.leaked_values
+
+
+def test_output_validator_common_word_false_positive_resistance():
+    from src.output_validator import OutputValidator
+    validator = OutputValidator()
+    mapping = {"[PERSON_1]": "Will"}
+
+    # Preserving token while using English auxiliary verb 'will'
+    result = validator.validate(
+        response="Hello [PERSON_1], I will help you with your account today.",
+        vault_mapping=mapping,
+    )
+    assert result.is_safe is True
+
+
+def test_sanitizer_masks_credit_card_and_tokenizes_email():
+    from unittest.mock import MagicMock
+    mock_detector = MagicMock()
+    mock_detector.detect.return_value = [
+        PIIDetection("CREDIT_CARD", 5, 21, 0.8, "1234567890123456"),
+        PIIDetection("EMAIL_ADDRESS", 31, 47, 0.9, "user@example.com"),
+    ]
+    sanitizer = PIISanitizer(detector=mock_detector)
+    text = "Card 1234567890123456 email is user@example.com"
+    result = sanitizer.sanitize(text)
+    assert result["status"] == "SAFE"
+    assert "************3456" in result["safe_text"]
+    assert "[EMAIL_ADDRESS_1]" in result["safe_text"]
+    assert result["vault"].get_mapping() == {"[EMAIL_ADDRESS_1]": "user@example.com"}
+
+

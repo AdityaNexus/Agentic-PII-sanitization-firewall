@@ -1,19 +1,22 @@
+import re
 from typing import Dict
 
 class PIIVault:
     def __init__(self):
-        self.mapping : Dict[str,str] = {}
+        self.mapping: Dict[str, str] = {}
     
-    def store(self,token:str,value:str)->None:
+    def store(self, token: str, value: str) -> None:
         self.mapping[token] = value
     
     def restore(self, text: str) -> str:
-        restored = text 
+        if not self.mapping:
+            return text
 
-        for token, value in self.mapping.items():
-            restored = restored.replace(token, value)
+        # Sort tokens by length descending to match longer tokens first (e.g. [PERSON_10] before [PERSON_1])
+        sorted_tokens = sorted(self.mapping.keys(), key=len, reverse=True)
+        pattern = re.compile("|".join(re.escape(token) for token in sorted_tokens))
 
-        return restored
+        return pattern.sub(lambda match: self.mapping[match.group(0)], text)
 
-    def get_mapping(self)->Dict[str,str]:
+    def get_mapping(self) -> Dict[str, str]:
         return self.mapping.copy()

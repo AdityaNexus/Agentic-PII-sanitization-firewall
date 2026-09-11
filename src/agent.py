@@ -1,12 +1,16 @@
+import os
 from typing import TypedDict, Dict, List
 
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
+from .detector import PIIDetector
+from .secret_detector import SecretDetector
 from .sanitizer import PIISanitizer
 from .vault import PIIVault
 from .output_validator import OutputValidator
+from .output_repair import OutputRepairer
 
 
 # ============================================================
@@ -14,6 +18,11 @@ from .output_validator import OutputValidator
 # ============================================================
 
 MAX_RETRIES = 3
+
+LLM_BASE_URL = os.getenv("FIREWALL_LLM_BASE_URL", "http://127.0.0.1:8080/v1")
+LLM_API_KEY = os.getenv("FIREWALL_LLM_API_KEY", "not-needed")
+LLM_MODEL = os.getenv("FIREWALL_LLM_MODEL", "Qwen3-1.7B-Q8_0.gguf")
+LLM_TIMEOUT = float(os.getenv("FIREWALL_LLM_TIMEOUT", "60.0"))
 
 
 # ============================================================
@@ -64,20 +73,31 @@ class AgentState(TypedDict):
 # ============================================================
 
 llm = ChatOpenAI(
-    base_url="http://127.0.0.1:8080/v1",
-    api_key="not-needed",
-    model="Qwen3-1.7B-Q8_0.gguf",
+    base_url=LLM_BASE_URL,
+    api_key=LLM_API_KEY,
+    model=LLM_MODEL,
     temperature=0.2,
     max_tokens=512,
+    timeout=LLM_TIMEOUT,
 )
 
 
 # ============================================================
-# Security Components
+# Security Components (Shared Instances for Performance)
 # ============================================================
 
-sanitizer_engine = PIISanitizer()
-output_validator = OutputValidator()
+shared_pii_detector = PIIDetector()
+shared_secret_detector = SecretDetector()
+output_repairer = OutputRepairer()
+
+sanitizer_engine = PIISanitizer(
+    detector=shared_pii_detector,
+    secret_detector=shared_secret_detector
+)
+output_validator = OutputValidator(
+    detector=shared_pii_detector,
+    secret_detector=shared_secret_detector
+)
 
 
 # ============================================================
@@ -183,7 +203,7 @@ def reason_node(state: AgentState):
     ]
 
     # --------------------------------------------------------
-    # Add retry instruction only when necessary
+    # Add previous response + retry instruction with full context
     # --------------------------------------------------------
 
     retry_instruction = state.get(
@@ -191,8 +211,18 @@ def reason_node(state: AgentState):
         ""
     )
 
-    if retry_instruction:
-
+    if retry_instruction and state.get("llm_response"):
+        messages.append(
+            AIMessage(
+                content=state["llm_response"]
+            )
+        )
+        messages.append(
+            HumanMessage(
+                content=retry_instruction
+            )
+        )
+    elif retry_instruction:
         messages.append(
             HumanMessage(
                 content=retry_instruction
@@ -200,7 +230,7 @@ def reason_node(state: AgentState):
         )
 
     # --------------------------------------------------------
-    # Call local Qwen
+    # Call LLM
     # --------------------------------------------------------
 
     response = llm.invoke(messages).content
@@ -219,8 +249,16 @@ def reason_node(state: AgentState):
 
 def output_firewall_node(state: AgentState):
 
+    llm_response = state.get("llm_response", "")
+
+    # Auto-repair slightly corrupted or unbracketed placeholders first
+    repaired_response = output_repairer.repair(
+        response=llm_response,
+        vault_mapping=state.get("vault_mapping", {})
+    )
+
     result = output_validator.validate(
-        response=state["llm_response"],
+        response=repaired_response,
         vault_mapping=state["vault_mapping"],
     )
 
@@ -253,6 +291,8 @@ def output_firewall_node(state: AgentState):
         )
 
     return {
+        "llm_response": repaired_response,
+
         "is_valid": result.is_safe,
 
         "security_status": (
