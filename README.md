@@ -105,10 +105,6 @@ The demo prints the original input, sanitized text, vault mapping, LLM draft, va
 - Validation helps prevent token loss or corruption; it is not a substitute for authorization, access controls, or a full DLP policy.
 - Review and extend Presidio recognizers for the PII types and jurisdictions relevant to your application.
 
-## Resume-ready description
-
-> Built an agentic PII sanitization firewall using Python, Microsoft Presidio, LangGraph, and a local OpenAI-compatible LLM. Designed a dynamic token vault that anonymizes sensitive entities before inference, validates placeholder integrity in model responses, and safely restores original values after processing. 
-
 ## License
 
 No license has been specified yet.
