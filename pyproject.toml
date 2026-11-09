@@ -1,7 +1,7 @@
 [project]
 name = "agentic-pii-sanitization-firewall"
 version = "0.1.0"
-description = "Add your description here"
+description = "Agentic PII sanitization firewall for privacy-preserving local LLM workflows"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
